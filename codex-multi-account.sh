@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Run additional Codex Desktop instances with separate OAuth accounts.
+# Run additional ChatGPT Desktop (formerly Codex Desktop) instances with
+# separate OAuth accounts.
 #
 # Default behavior:
 #   - primary Codex home:   ~/.codex
@@ -17,7 +18,7 @@ SECONDARY_HOME_OVERRIDE="${CODEX_SECONDARY_HOME:-}"
 PROFILE_DIR_OVERRIDE="${CODEX_PROFILE_DIR:-}"
 SECONDARY_HOME_EXPLICIT=0
 PROFILE_DIR_EXPLICIT=0
-CODEX_APP="${CODEX_APP:-/Applications/Codex.app}"
+CODEX_APP="${CHATGPT_APP:-${CODEX_APP:-}}"
 REGISTRY_DIR="${CODEX_MULTI_REGISTRY_DIR:-$HOME/.codex-multi-account}"
 REGISTRY_FILE="${CODEX_MULTI_REGISTRY_FILE:-$REGISTRY_DIR/instances.tsv}"
 MARKER_FILE=".codex-multi-account-managed"
@@ -46,15 +47,15 @@ usage() {
   cat <<'EOF'
 Usage: codex-multi-account.sh [options]
 
-Set up and optionally launch one or more additional Codex Desktop instances
-with separate OAuth accounts.
+Set up and optionally launch one or more additional ChatGPT Desktop instances
+with separate OAuth accounts. Legacy Codex.app bundles are also supported.
 
 Options:
   --account NAME           Secondary account suffix. Default: multi-2
                             Example: --account work uses ~/.codex-work
                             and ~/Library/Application Support/Codex-work.
   --accounts N             Prepare/launch N total accounts, counting the normal
-                            primary Codex app as account 1. For example,
+                            primary ChatGPT/Codex app as account 1. For example,
                             --accounts 5 launches multi-2 through multi-5.
   --primary-home PATH       Primary Codex home. Default: ~/.codex
   --secondary-home PATH     Secondary Codex home. Default: ~/.codex-multi-2
@@ -62,7 +63,8 @@ Options:
   --profile-dir PATH        Secondary Chromium profile dir. Default:
                             ~/Library/Application Support/Codex-Multi-2
                             Cannot be combined with --accounts.
-  --codex-app PATH          Codex.app path. Default: /Applications/Codex.app
+  --app PATH                ChatGPT.app or Codex.app path. Default: auto-detect.
+  --codex-app PATH          Legacy alias for --app.
   --symlink-history         Opt in to sharing project/sidebar history with the
                             primary Codex profile via symlinks. Unsupported.
   --reset                   Remove generated secondary Codex homes/profiles,
@@ -83,6 +85,7 @@ Environment overrides:
   CODEX_ACCOUNT_NAME
   CODEX_SECONDARY_HOME
   CODEX_PROFILE_DIR
+  CHATGPT_APP
   CODEX_APP
   CODEX_MULTI_REGISTRY_DIR
   CODEX_MULTI_REGISTRY_FILE
@@ -209,8 +212,8 @@ while [ "$#" -gt 0 ]; do
       PROFILE_DIR_EXPLICIT=1
       shift 2
       ;;
-    --codex-app)
-      [ "$#" -ge 2 ] || die "--codex-app requires a path"
+    --app|--codex-app)
+      [ "$#" -ge 2 ] || die "$1 requires a path"
       CODEX_APP="$2"
       shift 2
       ;;
@@ -258,18 +261,67 @@ while [ "$#" -gt 0 ]; do
 done
 
 PRIMARY_HOME="$(expand_tilde "$PRIMARY_HOME")"
+
+detect_default_desktop_app() {
+  local candidate
+
+  # Prefer the renamed app, but only when it contains the bundled Codex CLI.
+  # This avoids selecting an older, unrelated ChatGPT desktop installation.
+  for candidate in \
+    "/Applications/ChatGPT.app" \
+    "$HOME/Applications/ChatGPT.app" \
+    "/Applications/Codex.app" \
+    "$HOME/Applications/Codex.app"
+  do
+    if [ -x "$candidate/Contents/Resources/codex" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  # Keep the failure message aligned with the current app name.
+  printf '%s\n' "/Applications/ChatGPT.app"
+}
+
+resolve_bundle_executable() {
+  local candidate executable executable_name info_plist
+
+  info_plist="$CODEX_APP/Contents/Info.plist"
+  executable_name=""
+
+  if [ -f "$info_plist" ] && command -v plutil >/dev/null 2>&1; then
+    executable_name="$(plutil -extract CFBundleExecutable raw -o - "$info_plist" 2>/dev/null || true)"
+  fi
+
+  for candidate in "$executable_name" ChatGPT Codex; do
+    [ -n "$candidate" ] || continue
+    executable="$CODEX_APP/Contents/MacOS/$candidate"
+    if [ -x "$executable" ]; then
+      printf '%s\n' "$executable"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+if [ -z "$CODEX_APP" ]; then
+  CODEX_APP="$(detect_default_desktop_app)"
+fi
+
 CODEX_APP="$(expand_tilde "$CODEX_APP")"
 REGISTRY_DIR="$(expand_tilde "$REGISTRY_DIR")"
 REGISTRY_FILE="$(expand_tilde "$REGISTRY_FILE")"
 
 CODEX_CLI="$CODEX_APP/Contents/Resources/codex"
-CODEX_EXE="$CODEX_APP/Contents/MacOS/Codex"
+CODEX_EXE=""
 
 if [ "$RESET" -ne 1 ]; then
   [ -d "$PRIMARY_HOME" ] || die "primary Codex home does not exist: $PRIMARY_HOME"
-  [ -d "$CODEX_APP" ] || die "Codex.app not found: $CODEX_APP"
-  [ -x "$CODEX_CLI" ] || die "Codex CLI not executable: $CODEX_CLI"
-  [ -x "$CODEX_EXE" ] || die "Codex app executable not found: $CODEX_EXE"
+  [ -d "$CODEX_APP" ] || die "ChatGPT/Codex desktop app not found: $CODEX_APP"
+  [ -x "$CODEX_CLI" ] || die "bundled Codex CLI not executable: $CODEX_CLI"
+  CODEX_EXE="$(resolve_bundle_executable)" \
+    || die "desktop app executable not found in: $CODEX_APP/Contents/MacOS"
 fi
 
 if [ "$SHARE_RUNTIME_DBS" -eq 1 ] && [ "$SYMLINK_HISTORY" -ne 1 ]; then
@@ -639,7 +691,7 @@ setup_current_account() {
   log "primary home:   $PRIMARY_HOME"
   log "secondary home: $SECONDARY_HOME"
   log "profile dir:    $PROFILE_DIR"
-  log "Codex app:      $CODEX_APP"
+  log "desktop app:    $CODEX_APP"
 
   if [ "$PRIMARY_HOME" = "$SECONDARY_HOME" ]; then
     die "primary and secondary homes must be different"
@@ -691,12 +743,12 @@ setup_current_account() {
   if [ "$LAUNCH" -eq 1 ]; then
     log_file="/tmp/codex-$(basename "$SECONDARY_HOME").log"
     if profile_is_running; then
-      log "Codex already appears to be running for this profile: $PROFILE_DIR"
+      log "ChatGPT/Codex already appears to be running for this profile: $PROFILE_DIR"
       log "done"
       return 0
     fi
     clear_stale_profile_singletons
-    log "launching secondary Codex instance"
+    log "launching secondary ChatGPT/Codex instance"
     log "log file: $log_file"
     if [ "$DRY_RUN" -eq 1 ]; then
       printf 'dry-run: CODEX_HOME=%q nohup %q --user-data-dir=%q >%q 2>&1 &\n' \
@@ -722,9 +774,9 @@ reset_current_account() {
 
   if profile_is_running; then
     if [ "$DRY_RUN" -eq 1 ]; then
-      log "dry-run: Codex appears to be running for this profile; real reset would stop here"
+      log "dry-run: ChatGPT/Codex appears to be running for this profile; real reset would stop here"
     else
-      die "Codex appears to be running for this profile. Quit it first: $PROFILE_DIR"
+      die "ChatGPT/Codex appears to be running for this profile. Quit it first: $PROFILE_DIR"
     fi
   fi
 
@@ -771,10 +823,10 @@ reset_all_managed_accounts() {
 
     if [ -s "$running_tmp" ]; then
       while IFS=$'\t' read -r account profile; do
-        printf 'error: Codex appears to be running for %s: %s\n' "$account" "$profile" >&2
+        printf 'error: ChatGPT/Codex appears to be running for %s: %s\n' "$account" "$profile" >&2
       done < "$running_tmp"
       rm -f "$managed_tmp" "$running_tmp"
-      die "quit matching secondary Codex windows before reset"
+      die "quit matching secondary ChatGPT/Codex windows before reset"
     fi
     rm -f "$running_tmp"
   fi
