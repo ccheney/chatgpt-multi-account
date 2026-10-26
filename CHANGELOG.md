@@ -14,6 +14,8 @@ First packaged release of the ChatGPT Multi-Account Desktop Launcher.
   shared conversations include their contents on newer desktop builds (#4).
 - Include thread-history databases and sidecars in targeted secondary-home
   backups before replacing them.
+- Keep process-detection search values out of the checker's arguments to
+  prevent false "already running" results during launch and reset.
 
 ### Included
 
@@ -23,7 +25,7 @@ First packaged release of the ChatGPT Multi-Account Desktop Launcher.
   or full backups, dry runs, and managed-account reset.
 - Separate auth and pending-message queues; runtime database sharing remains
   an explicit opt-in.
-- 24 integration tests and macOS/Linux CI covering bundle compatibility,
+- 26 integration tests and macOS/Linux CI covering bundle compatibility,
   history sharing, backup and reset behavior, launch isolation, and SQLite
   writes and locking.
 - Updated installation, compatibility, shared-history, and testing guidance.

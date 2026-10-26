@@ -622,7 +622,13 @@ backup_secondary_home() {
 profile_is_running() {
   marker="$CODEX_APP/Contents/"
   profile_arg="--user-data-dir=$PROFILE_DIR"
-  ps ax -o pid= -o command= | awk -v self="$$" -v marker="$marker" -v profile_arg="$profile_arg" '
+  # Keep the search strings out of awk's command line so the process check
+  # cannot match its own checker when ps reports the full argument list.
+  ps ax -o pid= -o command= | CODEX_MULTI_APP_MARKER="$marker" CODEX_MULTI_PROFILE_ARG="$profile_arg" awk -v self="$$" '
+    BEGIN {
+      marker = ENVIRON["CODEX_MULTI_APP_MARKER"]
+      profile_arg = ENVIRON["CODEX_MULTI_PROFILE_ARG"]
+    }
     $1 == self { next }
     index($0, marker) && index($0, profile_arg) { found = 1 }
     END { exit(found ? 0 : 1) }

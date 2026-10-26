@@ -163,6 +163,33 @@ class LauncherTests(unittest.TestCase):
         self.assertFalse(self.profile.exists())
         self.assertTrue(self.primary.exists())
 
+    def test_process_detection_ignores_its_own_checker(self):
+        self.secondary.mkdir()
+        self.profile.mkdir()
+        bin_dir = self.root / "bin"
+        self.make_executable(bin_dir / "ps", "#!/bin/sh\nexec /bin/ps axww -o pid= -o command=\n")
+        self.env["PATH"] = str(bin_dir) + ":" + self.env["PATH"]
+        self.run_launcher("--reset")
+        self.assertFalse(self.secondary.exists())
+
+    def test_reset_refuses_a_running_secondary(self):
+        self.add_cli()
+        self.secondary.mkdir()
+        self.profile.mkdir()
+        executable = self.make_executable(self.app / "Contents/MacOS/ChatGPT", "#!/bin/sh\nread -r unused\n")
+        process = subprocess.Popen(
+            ["/bin/sh", str(executable), "--user-data-dir=" + str(self.profile)],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        try:
+            result = self.run_launcher("--reset", expected=1)
+            self.assertIn("appears to be running", result.stderr)
+            self.assertTrue(self.secondary.exists())
+            self.assertTrue(self.profile.exists())
+        finally:
+            process.stdin.close()
+            process.wait(timeout=5)
+
     def test_optional_thread_history_is_skipped_on_older_versions(self):
         self.add_cli("legacy")
         self.run_launcher("--symlink-history")
