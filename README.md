@@ -66,6 +66,10 @@ To share project/sidebar/chat history from your primary `~/.codex` profile:
 ./codex-multi-account.sh --symlink-history
 ```
 
+This shares the state DB (thread list) and, on newer ChatGPT builds, the
+`thread_history_*.sqlite` DB that holds the conversation contents. Without the
+latter, shared threads show in the sidebar but open empty.
+
 Auth stays separate. The script automatically detects the current
 `state_*.sqlite` file, so rerunning it can relink after Codex changes suffixes
 such as `state_5.sqlite` to `state_6.sqlite`.

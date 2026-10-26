@@ -610,6 +610,7 @@ backup_secondary_home() {
     done < <(
       find "$SECONDARY_HOME" -maxdepth 1 \( \
         -name 'state_*.sqlite' -o -name 'state_*.sqlite-wal' -o -name 'state_*.sqlite-shm' -o \
+        -name 'thread_history_*.sqlite' -o -name 'thread_history_*.sqlite-wal' -o -name 'thread_history_*.sqlite-shm' -o \
         -name 'logs_*.sqlite' -o -name 'logs_*.sqlite-wal' -o -name 'logs_*.sqlite-shm' -o \
         -name 'goals_*.sqlite' -o -name 'goals_*.sqlite-wal' -o -name 'goals_*.sqlite-shm' -o \
         -name 'memories_*.sqlite' -o -name 'memories_*.sqlite-wal' -o -name 'memories_*.sqlite-shm' \
@@ -734,6 +735,11 @@ setup_current_account() {
 
     share_file_if_present ".codex-global-state.json"
     share_db_family "state" "state DB"
+    # Newer builds keep conversation turns/items here; without it shared
+    # threads appear in the sidebar but open empty.
+    if [ -n "$(detect_db_base "thread_history" "thread history DB")" ]; then
+      share_db_family "thread_history" "thread history DB"
+    fi
 
     share_dir "sessions"
     share_dir "archived_sessions"

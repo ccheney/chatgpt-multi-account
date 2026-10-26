@@ -4,8 +4,10 @@ import json
 import os
 from pathlib import Path
 import shlex
+import sqlite3
 import subprocess
 import tempfile
+import time
 import unittest
 
 
@@ -58,9 +60,9 @@ class LauncherTests(unittest.TestCase):
         doctor_file.write_text(json.dumps({"checks": {"state.paths": {"details": details}}}))
         return cli
 
-    def run_launcher(self, *args, expected=0):
+    def run_launcher(self, *args, expected=0, launch=False):
         result = subprocess.run(
-            ["/bin/bash", str(SCRIPT), "--no-launch", *args],
+            ["/bin/bash", str(SCRIPT), *([] if launch else ["--no-launch"]), *args],
             env=self.env, text=True, capture_output=True, timeout=20,
         )
         self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
@@ -160,6 +162,161 @@ class LauncherTests(unittest.TestCase):
         self.assertFalse(self.secondary.exists())
         self.assertFalse(self.profile.exists())
         self.assertTrue(self.primary.exists())
+
+    def test_optional_thread_history_is_skipped_on_older_versions(self):
+        self.add_cli("legacy")
+        self.run_launcher("--symlink-history")
+        self.assertEqual(list(self.secondary.glob("thread_history_*")), [])
+
+    def test_thread_history_and_sidecars_are_shared(self):
+        self.add_cli(details={
+            "state DB": str(self.primary / "state_5.sqlite") + " (file)",
+            "thread history DB": str(self.primary / "thread_history_2.sqlite") + " (file)",
+        })
+        (self.primary / "thread_history_2.sqlite").write_text("conversation contents")
+        self.run_launcher("--symlink-history")
+        for base in ("state_5.sqlite", "thread_history_2.sqlite"):
+            for suffix in ("", "-wal", "-shm"):
+                self.assert_link(base + suffix)
+
+    def test_doctor_selected_version_takes_precedence(self):
+        self.add_cli(details={
+            "state DB": str(self.primary / "state_5.sqlite") + " (file)",
+            "thread history DB": str(self.primary / "thread_history_2.sqlite") + " (file)",
+        })
+        for name in ("thread_history_2.sqlite", "thread_history_10.sqlite"):
+            (self.primary / name).touch()
+        self.run_launcher("--symlink-history")
+        self.assert_link("thread_history_2.sqlite")
+        self.assertFalse((self.secondary / "thread_history_10.sqlite").exists())
+
+    def test_failed_doctor_uses_highest_numeric_database_version(self):
+        cli = self.add_cli()
+        cli.write_text("#!/bin/sh\nexit 1\n")
+        for name in ("state_9.sqlite", "state_10.sqlite", "thread_history_2.sqlite",
+                     "thread_history_10.sqlite", "thread_history_invalid.sqlite"):
+            (self.primary / name).touch()
+        self.run_launcher("--symlink-history")
+        self.assert_link("state_10.sqlite")
+        self.assert_link("thread_history_10.sqlite")
+
+    def test_reported_missing_database_is_linked_for_later_creation(self):
+        self.add_cli(details={
+            "state DB": str(self.primary / "state_5.sqlite") + " (file)",
+            "thread history DB": str(self.primary / "thread_history_3.sqlite") + " (missing)",
+        })
+        self.run_launcher("--symlink-history")
+        self.assert_link("thread_history_3.sqlite")
+        (self.secondary / "thread_history_3.sqlite").write_text("new conversation")
+        self.assertEqual((self.primary / "thread_history_3.sqlite").read_text(), "new conversation")
+
+    def test_targeted_backup_preserves_replaced_history_and_auth(self):
+        self.add_cli()
+        self.secondary.mkdir()
+        (self.primary / "thread_history_2.sqlite").write_text("primary conversation")
+        (self.primary / "auth.json").write_text("test-only-primary-auth")
+        originals = {
+            "auth.json": "test-only-secondary-auth",
+            "config.toml": "secondary settings",
+            "state_4.sqlite": "old secondary state",
+            "thread_history_1.sqlite": "old secondary conversation",
+            "thread_history_1.sqlite-wal": "old secondary wal",
+            "thread_history_1.sqlite-shm": "old secondary shm",
+        }
+        for name, content in originals.items():
+            (self.secondary / name).write_text(content)
+        self.run_launcher("--symlink-history")
+        backups = list(self.root.glob("secondary.backup.*"))
+        self.assertEqual(len(backups), 1)
+        for name, content in originals.items():
+            self.assertEqual((backups[0] / name).read_text(), content)
+        for name in originals:
+            if name.endswith((".sqlite", "-wal", "-shm")):
+                self.assertFalse((self.secondary / name).exists())
+        self.assertEqual((self.secondary / "auth.json").read_text(), originals["auth.json"])
+        self.assertFalse((self.secondary / "auth.json").is_symlink())
+        self.assert_link("thread_history_2.sqlite")
+        self.assertEqual((self.primary / "thread_history_2.sqlite").read_text(), "primary conversation")
+
+    def test_rerun_preserves_existing_symlinks_in_backup(self):
+        self.add_cli()
+        (self.primary / "thread_history_1.sqlite").write_text("conversation")
+        self.run_launcher("--symlink-history")
+        self.run_launcher("--symlink-history")
+        backup = next(self.root.glob("secondary.backup.*"))
+        for suffix in ("", "-wal", "-shm"):
+            name = "thread_history_1.sqlite" + suffix
+            self.assertTrue((backup / name).is_symlink())
+            self.assert_link(name)
+
+    def test_queue_and_runtime_databases_remain_separate(self):
+        self.add_cli()
+        self.secondary.mkdir()
+        for name in ("queue_1.sqlite", "logs_1.sqlite", "goals_1.sqlite", "memories_1.sqlite"):
+            (self.primary / name).write_text("primary")
+            (self.secondary / name).write_text("secondary")
+        self.run_launcher("--symlink-history")
+        for name in ("queue_1.sqlite", "logs_1.sqlite", "goals_1.sqlite", "memories_1.sqlite"):
+            self.assertFalse((self.secondary / name).is_symlink())
+            self.assertEqual((self.secondary / name).read_text(), "secondary")
+
+    def test_runtime_opt_in_still_leaves_queue_separate(self):
+        self.add_cli()
+        for name in ("queue_1.sqlite", "logs_1.sqlite", "goals_1.sqlite", "memories_1.sqlite"):
+            (self.primary / name).touch()
+        self.run_launcher("--symlink-history", "--share-runtime-dbs")
+        for name in ("logs_1.sqlite", "goals_1.sqlite", "memories_1.sqlite"):
+            self.assert_link(name)
+        self.assertFalse((self.secondary / "queue_1.sqlite").exists())
+
+    def test_sqlite_wal_connections_share_commits_and_locking(self):
+        self.add_cli()
+        database = self.primary / "thread_history_1.sqlite"
+        first = sqlite3.connect(database, timeout=0.1)
+        self.addCleanup(first.close)
+        self.assertEqual(first.execute("PRAGMA journal_mode=WAL").fetchone()[0], "wal")
+        first.execute("CREATE TABLE conversation (body TEXT)")
+        first.execute("INSERT INTO conversation VALUES ('primary message')")
+        first.commit()
+        self.run_launcher("--symlink-history")
+        second = sqlite3.connect(self.secondary / database.name, timeout=0.1)
+        self.addCleanup(second.close)
+        self.assertEqual(second.execute("SELECT body FROM conversation").fetchone()[0], "primary message")
+        second.execute("INSERT INTO conversation VALUES ('secondary message')")
+        second.commit()
+        self.assertEqual(first.execute("SELECT COUNT(*) FROM conversation").fetchone()[0], 2)
+        first.execute("BEGIN IMMEDIATE")
+        with self.assertRaisesRegex(sqlite3.OperationalError, "locked"):
+            second.execute("BEGIN IMMEDIATE")
+        first.rollback()
+        second.execute("BEGIN IMMEDIATE")
+        second.rollback()
+
+    def test_reset_shared_account_preserves_primary_history(self):
+        self.add_cli()
+        (self.primary / "thread_history_1.sqlite").write_text("conversation")
+        self.run_launcher("--symlink-history")
+        self.run_launcher("--reset")
+        self.assertFalse(self.secondary.exists())
+        self.assertFalse(self.profile.exists())
+        self.assertEqual((self.primary / "thread_history_1.sqlite").read_text(), "conversation")
+
+    def test_launch_passes_separate_home_and_profile(self):
+        self.add_cli()
+        self.secondary = self.root / self.root.name
+        self.env["CODEX_SECONDARY_HOME"] = str(self.secondary)
+        capture = self.root / "launched.txt"
+        self.make_executable(self.app / "Contents/MacOS/ChatGPT",
+                             "#!/bin/sh\nprintf '%s\\n' \"$CODEX_HOME\" \"$@\" > "
+                             + shlex.quote(str(capture)) + "\n")
+        log = Path("/tmp") / ("codex-" + self.secondary.name + ".log")
+        self.assertFalse(log.exists())
+        self.addCleanup(lambda: log.unlink(missing_ok=True))
+        self.run_launcher(launch=True)
+        deadline = time.monotonic() + 5
+        while not capture.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertEqual(capture.read_text().splitlines(), [str(self.secondary), "--user-data-dir=" + str(self.profile)])
 
 
 if __name__ == "__main__":
