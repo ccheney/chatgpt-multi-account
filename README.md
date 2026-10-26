@@ -14,10 +14,23 @@ names below intentionally retain `Codex` so existing accounts keep working.
 
 ## Quick Start
 
+Requires macOS, Bash (the system `/bin/bash` works), an installed ChatGPT/Codex
+desktop app that includes the Codex CLI, and an existing primary `~/.codex`
+home. Open the normal app and sign in before setting up a second account.
+
+Download the launcher from the [latest release](https://github.com/ccheney/chatgpt-multi-account/releases/latest):
+
 ```bash
+curl -fL -o codex-multi-account.sh \
+  https://github.com/ccheney/chatgpt-multi-account/releases/latest/download/codex-multi-account.sh
 chmod +x ./codex-multi-account.sh
+./codex-multi-account.sh --dry-run
 ./codex-multi-account.sh
 ```
+
+Releases also include a `.tar.gz` archive with the launcher, documentation,
+license, and tests, plus `SHA256SUMS` for verifying the downloads. See the
+[changelog](CHANGELOG.md) for release details.
 
 The default secondary account uses:
 
@@ -26,9 +39,15 @@ The default secondary account uses:
 
 After the new ChatGPT window opens, sign in with your second account.
 
-The script auto-detects `/Applications/ChatGPT.app` first and falls back to a
-legacy `/Applications/Codex.app`. It reads the bundle's executable name, so both
-the current `ChatGPT` executable and the former `Codex` executable are supported.
+The script checks `ChatGPT.app` in `/Applications` and `~/Applications` before
+checking legacy `Codex.app` bundles in those locations. It accepts both bundled
+CLI layouts, preferring the newer path:
+
+- `Contents/Resources/codex-cli/bin/codex`
+- `Contents/Resources/codex`
+
+It reads the bundle's executable name, so both the current `ChatGPT` executable
+and the former `Codex` executable are supported.
 To use an app in a different location:
 
 ```bash
@@ -37,6 +56,10 @@ To use an app in a different location:
 
 You can also set `CHATGPT_APP`. The legacy `--codex-app` option and `CODEX_APP`
 environment variable remain available for backward compatibility.
+
+Use `--no-launch` to prepare the secondary home and profile without opening a
+window. Run `./codex-multi-account.sh --help` for all options and environment
+overrides.
 
 ## More Accounts
 
@@ -58,7 +81,7 @@ That uses `~/.codex-work` and `~/Library/Application Support/Codex-work`.
 
 ## Optional Shared History
 
-By default, every account has separate projects, chats, runtime data, and auth.
+New accounts start with separate projects, chats, runtime data, and auth.
 
 To share project/sidebar/chat history from your primary `~/.codex` profile:
 
@@ -67,14 +90,31 @@ To share project/sidebar/chat history from your primary `~/.codex` profile:
 ```
 
 This shares the state DB (thread list) and, on newer ChatGPT builds, the
-`thread_history_*.sqlite` DB that holds the conversation contents. Without the
-latter, shared threads show in the sidebar but open empty.
+`thread_history_*.sqlite` DB that holds the conversation contents, including
+their SQLite `-wal` and `-shm` files. Without the thread-history DB, shared
+threads can show in the sidebar but open empty. Older bundles without a
+thread-history DB remain supported.
 
-Auth stays separate. The script automatically detects the current
-`state_*.sqlite` file, so rerunning it can relink after Codex changes suffixes
-such as `state_5.sqlite` to `state_6.sqlite`.
+The launcher uses `codex doctor --json` when Python 3 is available to detect
+the current database filenames. It falls back to the highest numeric suffix
+found in the primary home. Rerun with `--symlink-history` after database
+upgrades, such as `state_5.sqlite` to `state_6.sqlite`, to refresh the links.
 
-Quit ChatGPT/Codex windows before changing shared-history links.
+Auth, `config.toml`, and `AGENTS.md` remain separate. Pending-message
+`queue_*.sqlite` databases are never shared. Logs, goals, and memories databases
+remain separate unless you also pass `--share-runtime-dbs`.
+
+Before replacing files in an existing secondary home, the launcher creates a
+targeted backup at `<secondary-home>.backup.<timestamp>`. This includes account
+identity/config, replaced history paths, and thread-history databases and their
+sidecars. Existing symlinks are backed up as links, not independent copies of
+the primary data. Use `--full-backup` to copy the entire secondary home, or
+`--no-backup` to skip the backup.
+
+Quit ChatGPT/Codex windows before changing shared-history links. Links persist
+between launches; omitting `--symlink-history` later does not unlink them. To
+return to a clean isolated account, reset that secondary account and recreate
+it without the flag. Reset removes that account's local data and sign-in.
 
 ## Reset
 
@@ -93,3 +133,20 @@ Remove a specific account or account range:
 
 Reset refuses to remove your primary `~/.codex`, your home directory, or the
 normal ChatGPT/Codex app profile. Quit matching secondary windows before reset.
+
+## Development and Tests
+
+From a source checkout or the release archive:
+
+```bash
+/bin/bash -n codex-multi-account.sh
+shellcheck codex-multi-account.sh
+python3 -m unittest discover -s tests -v
+```
+
+Tests require Python 3.9+ and use disposable app bundles, profiles, and SQLite
+databases. They cover CLI layout selection, launch arguments, history sharing,
+database upgrades and backups, SQLite WAL locking, auth/queue isolation, and
+reset. They do not launch the installed ChatGPT app or access your accounts.
+GitHub Actions runs the suite on macOS and Linux; the launcher itself is for
+macOS.

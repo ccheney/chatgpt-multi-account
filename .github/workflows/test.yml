@@ -1,0 +1,27 @@
+name: Test launcher
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check Bash syntax
+        run: /bin/bash -n codex-multi-account.sh
+      - name: ShellCheck
+        if: runner.os == 'Linux'
+        run: shellcheck codex-multi-account.sh
+      - name: Run integration tests
+        run: python3 -m unittest discover -s tests -v
